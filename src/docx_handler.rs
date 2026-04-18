@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zip::{ZipArchive, ZipWriter};
 use zip::write::FileOptions;
+use std::io::Read as _;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocxMetadata {
@@ -174,9 +175,23 @@ impl DocxHandler {
         };
         
         self.documents.insert(doc_id.clone(), metadata);
+        // Initialise an empty ops entry so read-only tools (get_tables, get_ranges, etc.)
+        // can locate the document; content is parsed from XML, not from ops.
+        self.in_memory_ops.insert(doc_id.clone(), Vec::new());
         info!("Opened document from {:?} with ID: {}", path, doc_id);
-        
+
         Ok(doc_id)
+    }
+
+    /// Read and return the raw `word/document.xml` string from a DOCX file.
+    fn read_document_xml(path: &Path) -> Result<String> {
+        let file = File::open(path)?;
+        let mut archive = ZipArchive::new(file)?;
+        let mut entry = archive.by_name("word/document.xml")
+            .with_context(|| "No word/document.xml in DOCX")?;
+        let mut xml = String::new();
+        entry.read_to_string(&mut xml)?;
+        Ok(xml)
     }
 
     pub fn add_paragraph(&mut self, doc_id: &str, text: &str, style: Option<DocxStyle>) -> Result<()> {
@@ -642,20 +657,104 @@ impl DocxHandler {
     /// - paragraph[INDEX]
     /// - table[T].cell[R,C]
     pub fn get_ranges(&self, doc_id: &str, selector: &str) -> Result<Vec<RangeId>> {
-        let ops = self.in_memory_ops.get(doc_id)
-            .ok_or_else(|| anyhow::anyhow!("No in-memory ops for document: {}", doc_id))?;
+        let metadata = self.documents.get(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
+
+        // For in-memory created documents with ops, use the ops-based path.
+        let ops_populated = self.in_memory_ops.get(doc_id)
+            .map(|ops| !ops.is_empty())
+            .unwrap_or(false);
+
+        if ops_populated {
+            let ops = self.in_memory_ops.get(doc_id).unwrap();
+            let mut results = Vec::new();
+            if let Some(rest) = selector.strip_prefix("heading:") {
+                let needle = rest.trim().trim_matches('\'').trim_matches('"');
+                let mut idx = 0usize;
+                for op in ops.iter() {
+                    if let DocxOp::Heading { text, .. } = op {
+                        if text == needle { results.push(RangeId::Heading { index: idx }); }
+                        idx += 1;
+                    }
+                }
+                return Ok(results);
+            }
+            if let Some(start) = selector.strip_prefix("paragraph[") {
+                if let Some(endpos) = start.find(']') {
+                    if let Ok(pi) = start[..endpos].parse::<usize>() {
+                        results.push(RangeId::Paragraph { index: pi });
+                        return Ok(results);
+                    }
+                }
+            }
+            if let Some(start) = selector.strip_prefix("table[") {
+                if let Some(endt) = start.find(']') {
+                    let t_str = &start[..endt];
+                    if let Some(cell_part) = start[endt+1..].strip_prefix(".cell[") {
+                        if let Some(endc) = cell_part.find(']') {
+                            let coords = &cell_part[..endc];
+                            let mut it = coords.split(',');
+                            if let (Ok(ti), Some(rs), Some(cs)) = (t_str.parse::<usize>(), it.next(), it.next()) {
+                                if let (Ok(r), Ok(c)) = (rs.trim().parse::<usize>(), cs.trim().parse::<usize>()) {
+                                    results.push(RangeId::TableCell { table_index: ti, row: r, col: c });
+                                    return Ok(results);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(results);
+        }
+
+        // Parse from XML for opened documents.
+        let xml = Self::read_document_xml(&metadata.path)?;
+        let doc = roxmltree::Document::parse(&xml)
+            .with_context(|| "Failed to parse document XML")?;
+
         let mut results = Vec::new();
+
+        // "bookmarks" — list all bookmark names from <w:bookmarkStart w:name="...">
+        if selector == "bookmarks" {
+            for node in doc.descendants().filter(|n| n.tag_name().name() == "bookmarkStart") {
+                if let Some(name) = node.attribute(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "name"))
+                    .or_else(|| node.attribute("name"))
+                {
+                    if !name.starts_with("_") {
+                        results.push(RangeId::Heading { index: results.len() }); // reuse as placeholder
+                        // Return as metadata via a dedicated path below
+                        let _ = name; // will be handled in the json tool layer
+                    }
+                }
+            }
+            // Return empty — caller should use get_ranges_json for bookmarks
+            return Ok(results);
+        }
+
         if let Some(rest) = selector.strip_prefix("heading:") {
             let needle = rest.trim().trim_matches('\'').trim_matches('"');
             let mut idx = 0usize;
-            for op in ops.iter() {
-                if let DocxOp::Heading { text, .. } = op {
-                    if text == needle { results.push(RangeId::Heading { index: idx }); }
+            for para in doc.descendants().filter(|n| n.tag_name().name() == "p") {
+                let is_heading = para.descendants()
+                    .filter(|n| n.tag_name().name() == "pStyle")
+                    .any(|n| n.attribute(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "val"))
+                        .or_else(|| n.attribute("val"))
+                        .map(|v| v.starts_with("Heading") || v.starts_with("heading"))
+                        .unwrap_or(false));
+                if is_heading {
+                    let text: String = para.descendants()
+                        .filter(|n| n.tag_name().name() == "t")
+                        .filter_map(|n| n.text())
+                        .collect();
+                    if text.trim() == needle {
+                        results.push(RangeId::Heading { index: idx });
+                    }
                     idx += 1;
                 }
             }
             return Ok(results);
         }
+
         if let Some(start) = selector.strip_prefix("paragraph[") {
             if let Some(endpos) = start.find(']') {
                 if let Ok(pi) = start[..endpos].parse::<usize>() {
@@ -664,6 +763,7 @@ impl DocxHandler {
                 }
             }
         }
+
         if let Some(start) = selector.strip_prefix("table[") {
             if let Some(endt) = start.find(']') {
                 let t_str = &start[..endt];
@@ -671,10 +771,7 @@ impl DocxHandler {
                     if let Some(endc) = cell_part.find(']') {
                         let coords = &cell_part[..endc];
                         let mut it = coords.split(',');
-                        if let (Ok(ti), Some(rs), Some(cs)) = (
-                            t_str.parse::<usize>(),
-                            it.next(), it.next()
-                        ) {
+                        if let (Ok(ti), Some(rs), Some(cs)) = (t_str.parse::<usize>(), it.next(), it.next()) {
                             if let (Ok(r), Ok(c)) = (rs.trim().parse::<usize>(), cs.trim().parse::<usize>()) {
                                 results.push(RangeId::TableCell { table_index: ti, row: r, col: c });
                                 return Ok(results);
@@ -684,7 +781,27 @@ impl DocxHandler {
                 }
             }
         }
+
         Ok(results)
+    }
+
+    /// List all bookmarks in the document parsed from XML.
+    pub fn get_bookmarks(&self, doc_id: &str) -> Result<serde_json::Value> {
+        let metadata = self.documents.get(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
+        let xml = Self::read_document_xml(&metadata.path)?;
+        let doc = roxmltree::Document::parse(&xml)
+            .with_context(|| "Failed to parse document XML")?;
+        let wns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let mut bookmarks = Vec::new();
+        for node in doc.descendants().filter(|n| n.tag_name().name() == "bookmarkStart") {
+            let name = node.attribute((wns, "name")).or_else(|| node.attribute("name")).unwrap_or("").to_string();
+            let id = node.attribute((wns, "id")).or_else(|| node.attribute("id")).unwrap_or("").to_string();
+            if !name.starts_with('_') {
+                bookmarks.push(serde_json::json!({ "id": id, "name": name }));
+            }
+        }
+        Ok(serde_json::json!({ "bookmarks": bookmarks }))
     }
 
     /// Replace text in a given range id (paragraph or heading). For TableCell use set_table_cell_text
@@ -795,24 +912,65 @@ impl DocxHandler {
         Ok(updated)
     }
 
-    /// List tables with resolved merges and sizes
+    /// List tables parsed directly from the DOCX XML (works for both opened and created documents).
     pub fn get_tables_json(&self, doc_id: &str) -> Result<serde_json::Value> {
-        let ops = self.in_memory_ops.get(doc_id)
-            .ok_or_else(|| anyhow::anyhow!("No in-memory ops for document: {}", doc_id))?;
-        let mut tables = Vec::new();
-        for (ti, op) in ops.iter().enumerate() {
-            if let DocxOp::Table { data } = op {
-                let rows = data.rows.len();
-                let cols = data.rows.first().map(|r| r.len()).unwrap_or(0);
-                tables.push(serde_json::json!({
-                    "index": ti,
-                    "rows": rows,
-                    "cols": cols,
-                    "col_widths": data.col_widths,
-                    "merges": data.merges,
-                    "cells": data.rows,
-                }));
+        let metadata = self.documents.get(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
+
+        // If the document was created in-memory (ops exist and have content), use ops path.
+        // Otherwise (opened existing file), parse from XML.
+        if let Some(ops) = self.in_memory_ops.get(doc_id) {
+            let has_table_ops = ops.iter().any(|op| matches!(op, DocxOp::Table { .. }));
+            if has_table_ops {
+                let mut tables = Vec::new();
+                for (ti, op) in ops.iter().enumerate() {
+                    if let DocxOp::Table { data } = op {
+                        let rows = data.rows.len();
+                        let cols = data.rows.first().map(|r| r.len()).unwrap_or(0);
+                        tables.push(serde_json::json!({
+                            "index": ti, "rows": rows, "cols": cols,
+                            "col_widths": data.col_widths, "merges": data.merges,
+                            "cells": data.rows,
+                        }));
+                    }
+                }
+                return Ok(serde_json::json!({ "tables": tables }));
             }
+        }
+
+        // Parse tables from XML.
+        let xml = Self::read_document_xml(&metadata.path)?;
+        let doc = roxmltree::Document::parse(&xml)
+            .with_context(|| "Failed to parse document XML")?;
+
+        let mut tables = Vec::new();
+        for (ti, tbl) in doc.descendants()
+            .filter(|n| n.tag_name().name() == "tbl")
+            .enumerate()
+        {
+            let mut rows_out: Vec<Vec<String>> = Vec::new();
+            for tr in tbl.children().filter(|n| n.tag_name().name() == "tr") {
+                let mut row: Vec<String> = Vec::new();
+                for tc in tr.children().filter(|n| n.tag_name().name() == "tc") {
+                    let cell_text: String = tc.descendants()
+                        .filter(|n| n.tag_name().name() == "t")
+                        .filter_map(|n| n.text())
+                        .collect::<Vec<_>>()
+                        .join("");
+                    row.push(cell_text);
+                }
+                if !row.is_empty() {
+                    rows_out.push(row);
+                }
+            }
+            let row_count = rows_out.len();
+            let col_count = rows_out.first().map(|r| r.len()).unwrap_or(0);
+            tables.push(serde_json::json!({
+                "index": ti,
+                "rows": row_count,
+                "cols": col_count,
+                "cells": rows_out,
+            }));
         }
         Ok(serde_json::json!({ "tables": tables }))
     }

@@ -492,6 +492,16 @@ impl DocxToolsProvider {
                 annotations: None,
             },
             Tool {
+                name: "get_bookmarks".to_string(),
+                description: Some("List all bookmarks defined in the document".to_string()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"document_id": {"type": "string"}},
+                    "required": ["document_id"]
+                }),
+                annotations: None,
+            },
+            Tool {
                 name: "list_images".to_string(),
                 description: Some("List images with width/height and alt text".to_string()),
                 input_schema: json!({
@@ -1298,6 +1308,14 @@ impl DocxToolsProvider {
                 let doc_id = arguments["document_id"].as_str().unwrap_or("");
                 let handler = self.handler.read().unwrap();
                 match handler.get_tables_json(doc_id) {
+                    Ok(json) => ToolOutcome::Metadata { metadata: json },
+                    Err(e) => ToolOutcome::Error { code: ErrorCode::DocNotFound, error: e.to_string(), hint: None },
+                }
+            },
+            "get_bookmarks" => {
+                let doc_id = arguments["document_id"].as_str().unwrap_or("");
+                let handler = self.handler.read().unwrap();
+                match handler.get_bookmarks(doc_id) {
                     Ok(json) => ToolOutcome::Metadata { metadata: json },
                     Err(e) => ToolOutcome::Error { code: ErrorCode::DocNotFound, error: e.to_string(), hint: None },
                 }
