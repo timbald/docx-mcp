@@ -1539,7 +1539,7 @@ impl DocxToolsProvider {
             },
             
             "analyze_formatting" => {
-                let doc_id = arguments["document_id"].as_str().unwrap_or("");
+                let _doc_id = arguments["document_id"].as_str().unwrap_or("");
                 
                 // For now, return basic analysis - in full implementation would parse DOCX XML
                 ToolOutcome::Metadata { metadata: serde_json::json!({
@@ -1739,7 +1739,7 @@ impl DocxToolsProvider {
                 if is_search_shape {
                     let mut obj = serde_json::json!({"success": true});
                     if let Some(map) = metadata.as_object() {
-                        for (k, v) in map { obj[&k[..]] = v.clone(); }
+                        for (k, v) in map { obj[k.as_str()] = v.clone(); }
                     }
                     obj
                 } else {

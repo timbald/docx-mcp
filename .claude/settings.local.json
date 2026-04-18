@@ -6,7 +6,19 @@
       "Bash(rustc:*)",
       "Bash(cargo check:*)",
       "Bash(git push:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(grep -v '\\\\.d$')",
+      "Bash(grep -v '\\\\.rlib$')",
+      "Bash(grep -v '^deps$')",
+      "Bash(grep -v '^incremental$')",
+      "Bash(grep -v '^build$')",
+      "Bash(grep -v '^examples$')",
+      "Bash(python3 -m json.tool)",
+      "Bash(claude mcp *)",
+      "Bash(git *)",
+      "Bash(npm show *)",
+      "Bash(npx -y docx-mcp-server --version)",
+      "Bash(/Users/timfinch/GitHub/docx-mcp/target/release/docx-mcp)"
     ],
     "deny": []
   }

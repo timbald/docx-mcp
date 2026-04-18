@@ -124,7 +124,7 @@ impl PureRustConverter {
     /// Create a PDF from text content
     pub fn create_pdf_from_text(&self, text: &str, pdf_path: &Path) -> Result<()> {
         let (doc, page1, layer1) = PdfDocument::new("Document", Mm(210.0), Mm(297.0), "Layer 1");
-        let current_layer = doc.get_page(page1).get_layer(layer1);
+        let _current_layer = doc.get_page(page1).get_layer(layer1);
         
         // Use embedded font or built-in font
         let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
@@ -136,8 +136,8 @@ impl PureRustConverter {
         let margin_top = Mm(280.0);
         let margin_bottom = Mm(20.0);
         let page_width = Mm(210.0);
-        let page_height = Mm(297.0);
-        let text_width = page_width - (margin_left * 2.0);
+        let _page_height = Mm(297.0);
+        let _text_width = page_width - (margin_left * 2.0);
         
         let lines: Vec<&str> = text.lines().collect();
         let mut current_page = page1;

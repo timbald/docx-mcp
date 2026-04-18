@@ -477,7 +477,7 @@ impl DocxHandler {
 
         let mut total_replacements = 0usize;
 
-        let mut replace_text = |text: &str| -> (String, usize) {
+        let replace_text = |text: &str| -> (String, usize) {
             let mut count = 0usize;
             let result = re.replace_all(text, |_: &regex::Captures| {
                 count += 1;

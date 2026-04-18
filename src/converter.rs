@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use ::image::{ImageFormat};
 use printpdf::*;
 use dotext::MsDoc;
-use ::lopdf::{dictionary, Object, ObjectId, Document as LoDocument};
+use ::lopdf::Document as LoDocument;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
@@ -431,7 +431,7 @@ impl DocumentConverter {
         merged.version = "1.5".to_string();
         
         for pdf_path in pdf_paths {
-            let mut doc = LoDocument::load(pdf_path)?;
+            let doc = LoDocument::load(pdf_path)?;
             
             // Merge pages
             for page_id in doc.get_pages().values() {

@@ -13,6 +13,8 @@ mod docx_handler;
 mod converter;
 #[cfg(feature = "runtime-server")]
 mod pure_converter;
+#[cfg(feature = "runtime-server")]
+mod response;
 #[cfg(all(feature = "runtime-server", feature = "advanced-docx"))]
 mod advanced_docx;
 mod security;
