@@ -82,9 +82,10 @@ async fn main() -> Result<()> {
                 CapabilitiesBuilder::new().with_tools(true).build()
             }
             fn list_tools(&self) -> Vec<SpecTool> {
-                // DocxToolsProvider::list_tools is async; block briefly with tokio runtime handle
-                let rt = tokio::runtime::Handle::current();
-                let tools = rt.block_on(self.0.list_tools());
+                let provider = self.0.clone();
+                let tools = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(provider.list_tools())
+                });
                 tools.into_iter().map(|t| SpecTool{ name: t.name, description: t.description.unwrap_or_default(), input_schema: t.input_schema }).collect()
             }
             fn call_tool(&self, tool_name: &str, arguments: JsonValue) -> Pin<Box<dyn Future<Output = Result<Vec<Content>, mcp_spec::handler::ToolError>> + Send + 'static>> {
